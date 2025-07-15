@@ -38,17 +38,9 @@ class RewardManager():
     """The reward manager.
     """
 
-    def __init__(self,
-                tokenizer, 
-                num_examine, 
-                config=None,
-                max_resp_len=None) -> None:
+    def __init__(self, tokenizer, num_examine) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
-        self.config = config
-        if self.config and self.config.overlong_buffer.enable:
-            assert max_resp_len is not None, f"max_resp_len must be provided if self.config.overlong_buffer is enabled, but got None"
-        self.max_resp_len = max_resp_len
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
@@ -83,37 +75,17 @@ class RewardManager():
 
             # select rm_score
             data_source = data_item.non_tensor_batch['data_source']
-            
-            
-            # compute score
             compute_score_fn = _select_rm_score_fn(data_source)
 
-            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth) 
-                # 还有一点不同，他这里用的是concat (prompt + response) 的方式
-                # 但是DAPO里面只用response来计算score
-            
-            reward = score
-            
-            # 更改：for dapo, we add overlong penalty factor
-            if self.config and self.config.overlong_buffer.enable:
-                overlong_buffer_len = int(self.config.overlong_buffer.len)
-                expected_len = self.max_resp_len - overlong_buffer_len
-                exceed_len = valid_response_length - expected_len
-                overlong_penalty_factor = self.config.overlong_buffer.penalty_factor
-                overlong_reward = min(-exceed_len / overlong_buffer_len * overlong_penalty_factor, 0)
-                reward += overlong_reward
-            
-            reward_tensor[i, valid_response_length - 1] = reward
+            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth)
+            reward_tensor[i, valid_response_length - 1] = score
 
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
 
             if already_print_data_sources[data_source] < self.num_examine:
                 already_print_data_sources[data_source] += 1
-                print(f'[sequence {i}]')
                 print(sequences_str)
-                print("[ground_truth]", ground_truth)
-                print(f"[score]", score)
 
         return reward_tensor
 
@@ -122,7 +94,7 @@ import ray
 import hydra
 
 
-@hydra.main(config_path='config', config_name='ppo_trainer', version_base=None)
+@hydra.main(config_path='config', config_name='ppo_trainer_paramtest', version_base=None)
 def main(config):
     if not ray.is_initialized():
         # this is for local ray cluster
@@ -199,19 +171,10 @@ def main_task(config):
         role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
         mapping[Role.RewardModel] = global_pool_id
 
-    reward_fn = RewardManager(
-        tokenizer=tokenizer, 
-        num_examine=0, 
-        config=config.reward_model,
-        max_resp_len=config.data.max_response_length
-    )
+    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0)
 
     # Note that we always use function-based RM for validation
-    # val_reward_fn就不用限制长度了
-    val_reward_fn = RewardManager(
-        tokenizer=tokenizer, 
-        num_examine=1
-    )
+    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1)
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 

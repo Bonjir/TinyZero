@@ -74,10 +74,23 @@ class DataParallelPPOCritic(BasePPOCritic):
                                                                                                 sp_size=self.ulysses_sequence_parallel_size)
 
                 # only pass input_ids and position_ids to enable flash_attn_varlen
-                output = self.critic_module(input_ids=input_ids_rmpad,
-                                            attention_mask=None,
-                                            position_ids=position_ids_rmpad,
-                                            use_cache=False)  # prevent model thinks we are generating
+                # 更改的部分（try-except）
+                flag_finished = False
+                while not flag_finished:
+                    try:
+                        output = self.critic_module(input_ids=input_ids_rmpad,
+                                                    attention_mask=None,
+                                                    position_ids=position_ids_rmpad,
+                                                    use_cache=False)  # prevent model thinks we are generating
+                        
+                        flag_finished = True
+                    except RuntimeError as e:
+                        if 'CUDA out of memory' in str(e):
+                            torch.cuda.empty_cache()
+                            print("CUDA OOM, retrying...")
+                        else:
+                            raise e
+                        
                 values_rmpad = output.logits
                 values_rmpad = values_rmpad.squeeze(0)  # (total_nnz)
 

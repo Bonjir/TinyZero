@@ -40,8 +40,9 @@ from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManage
 
 from codetiming import Timer
 
-logger = logging.getLogger(__file__)
-logger.setLevel(os.getenv('VERL_PPO_LOGGING_LEVEL', 'WARN'))
+# logger = logging.getLogger(__file__)
+logger = None
+# logger.setLevel(os.getenv('VERL_PPO_LOGGING_LEVEL', 'DEBUG'))
 
 
 class ActorRolloutRefWorker(Worker):
@@ -122,7 +123,7 @@ class ActorRolloutRefWorker(Worker):
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy, MixedPrecision
         from torch import optim
 
-        log_gpu_memory_usage('Before init from HF AutoModel', logger=logger)
+        log_gpu_memory_usage('@ActorRolloutRefWorker._build_model_optimizer()Before init from HF AutoModel', logger=logger)
         local_path = copy_local_path_from_hdfs(model_path)
 
         # note that we have to create model in fp32. Otherwise, the optimizer is in bf16, which is incorrect
@@ -176,7 +177,7 @@ class ActorRolloutRefWorker(Worker):
         if self.rank == 0:
             print_model_size(actor_module)
 
-        log_gpu_memory_usage('After init from HF AutoModel', logger=logger)
+        log_gpu_memory_usage('@ActorRolloutRefWorker._build_model_optimizer() After init from HF AutoModel', logger=logger)
 
         # We wrap FSDP for rollout as well
         mixed_precision_config = fsdp_config.get('mixed_precision', None)
@@ -221,7 +222,7 @@ class ActorRolloutRefWorker(Worker):
             device_mesh=self.device_mesh,
             forward_prefetch=False)
 
-        log_gpu_memory_usage('After Actor FSDP init', logger=logger)
+        log_gpu_memory_usage('@ActorRolloutRefWorker._build_model_optimizer() After Actor FSDP init', logger=logger)
 
         # TODO: add more optimizer args into config
         if self._is_actor:
@@ -243,7 +244,7 @@ class ActorRolloutRefWorker(Worker):
             actor_optimizer = None
             actor_lr_scheduler = None
 
-        log_gpu_memory_usage('After actor optimizer init', logger=logger)
+        log_gpu_memory_usage('@ActorRolloutRefWorker._build_model_optimizer() After actor optimizer init', logger=logger)
 
         return actor_module_fsdp, actor_optimizer, actor_lr_scheduler, actor_model_config
 
@@ -264,12 +265,12 @@ class ActorRolloutRefWorker(Worker):
         elif self.config.rollout.name == 'vllm':
             from verl.workers.rollout.vllm_rollout import vLLMRollout
             from verl.workers.sharding_manager import FSDPVLLMShardingManager
-            log_gpu_memory_usage('Before building vllm rollout', logger=None)
+            log_gpu_memory_usage('@ActorRolloutRefWorker._build_rollout() Before building vllm rollout', logger=None)
             rollout = vLLMRollout(actor_module=self.actor_module_fsdp,
                                   config=self.config.rollout,
                                   tokenizer=self.tokenizer,
                                   model_hf_config=self.actor_model_config)
-            log_gpu_memory_usage('After building vllm rollout', logger=None)
+            log_gpu_memory_usage('@ActorRolloutRefWorker._build_rollout() After building vllm rollout', logger=None)
             if torch.distributed.get_world_size() == 1:
                 self.config.rollout.load_format = 'dummy_hf'
             rollout_sharding_manager = FSDPVLLMShardingManager(module=self.actor_module_fsdp,
@@ -277,7 +278,7 @@ class ActorRolloutRefWorker(Worker):
                                                                model_config=self.actor_model_config,
                                                                full_params='hf' in self.config.rollout.load_format,
                                                                device_mesh=rollout_device_mesh)
-            log_gpu_memory_usage('After building sharding manager', logger=None)
+            log_gpu_memory_usage('@ActorRolloutRefWorker._build_rollout() After building sharding manager', logger=None)
 
         return rollout, rollout_sharding_manager
 
@@ -315,10 +316,10 @@ class ActorRolloutRefWorker(Worker):
             if self._is_offload_param:
                 # param is require during state_dict in sharding manager
                 offload_fsdp_grad(module=self.actor_module_fsdp)
-                log_gpu_memory_usage('After offload actor grad during init', logger=logger)
+                log_gpu_memory_usage('@ActorRolloutRefWorker.init_model() After offload actor grad during init', logger=logger)
             if self._is_offload_optimizer:
                 offload_fsdp_optimizer(optimizer=self.actor_optimizer)
-                log_gpu_memory_usage('After offload actor optimizer during init', logger=logger)
+                log_gpu_memory_usage('@ActorRolloutRefWorker.init_model() After offload actor optimizer during init', logger=logger)
         # load from checkpoint
         if self._is_actor:
             OmegaConf.set_struct(self.config.actor, True)
@@ -332,13 +333,29 @@ class ActorRolloutRefWorker(Worker):
             self.rollout, self.rollout_sharding_manager = self._build_rollout()
 
         if self._is_ref:
-            self.ref_module_fsdp = self._build_model_optimizer(model_path=self.config.model.path,
-                                                               fsdp_config=self.config.ref.fsdp_config,
-                                                               optim_config=None,
-                                                               override_model_config=override_model_config,
-                                                               use_remove_padding=use_remove_padding,
-                                                               trust_remote_code=self.config.model.get(
-                                                                   'trust_remote_code', False))[0]
+            
+            ## 更改添加的部分（try-except）
+            flag_finished = False
+            while not flag_finished:
+                try:
+                    self.ref_module_fsdp = self._build_model_optimizer(model_path=self.config.model.path,
+                                                                    fsdp_config=self.config.ref.fsdp_config,
+                                                                    optim_config=None,
+                                                                    override_model_config=override_model_config,
+                                                                    use_remove_padding=use_remove_padding,
+                                                                    trust_remote_code=self.config.model.get(
+                                                                        'trust_remote_code', False))[0]
+                    flag_finished = True
+                except Exception as e:
+                
+                    if 'CUDA out of memory' in str(e):
+                        torch.cuda.empty_cache()
+                        print("CUDA OOM, retrying...")
+                    else:
+                        raise e
+                    # logger.error(f'Failed to build reference policy: {e}')
+                    # flag_finished = False
+            
             if self._is_offload_param:
                 offload_fsdp_param_and_grad(module=self.ref_module_fsdp, offload_grad=self._is_offload_grad)
 
@@ -347,14 +364,21 @@ class ActorRolloutRefWorker(Worker):
                 self.config.ref.use_remove_padding = use_remove_padding
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
 
+            
         if self._is_actor:
             self.flops_counter = FlopsCounter(self.actor_model_config)
 
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def update_actor(self, data: DataProto):
+        ## 尝试的更改，只在 ActorRolloutRefWorker.update_actor() 中添加empty_cache
+        torch.cuda.empty_cache()
+        log_gpu_memory_usage('@ActorRolloutRefWorker.update_actor() beginning', logger=logger)
+
         data = data.to('cuda')
+        
+        log_gpu_memory_usage('@ActorRolloutRefWorker.update_actor() after data.to(cuda)', logger=logger)
 
         assert self._is_actor
         if self._is_offload_param:
@@ -366,7 +390,7 @@ class ActorRolloutRefWorker(Worker):
 
         data.batch = data.batch.cuda()
 
-        log_gpu_memory_usage('Before update policy', logger=logger)
+        log_gpu_memory_usage('@ActorRolloutRefWorker.update_actor() After data.batch = data.batch.cuda() Before update policy', logger=logger)
 
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data=data)
@@ -382,7 +406,7 @@ class ActorRolloutRefWorker(Worker):
             lr = self.actor_lr_scheduler.get_last_lr()[0]
             metrics['actor/lr'] = lr
 
-            log_gpu_memory_usage('After update policy', logger=logger)
+            log_gpu_memory_usage('@ActorRolloutRefWorker.update_actor() After update policy', logger=logger)
 
             # TODO: here, we should return all metrics
             output = DataProto(meta_info={'metrics': metrics})
@@ -395,10 +419,12 @@ class ActorRolloutRefWorker(Worker):
         if self._is_offload_optimizer:
             offload_fsdp_optimizer(optimizer=self.actor_optimizer)
         torch.cuda.empty_cache()
+        log_gpu_memory_usage('@ActorRolloutRefWorker.update_actor() After empty cache', logger=logger)
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def generate_sequences(self, prompts: DataProto):
+        log_gpu_memory_usage('@ActorRolloutRefWorker.generate_sequences() beginning', logger=logger)
         prompts = prompts.to('cuda')
         # set to False if it is validation
         recompute_log_prob = prompts.meta_info.get('recompute_log_prob', True)
@@ -413,12 +439,12 @@ class ActorRolloutRefWorker(Worker):
         meta_info = {'eos_token_id': self.tokenizer.eos_token_id, 'pad_token_id': self.tokenizer.pad_token_id}
         prompts.meta_info.update(meta_info)
         with self.rollout_sharding_manager:
-            log_gpu_memory_usage('After entering rollout sharding manager', logger=logger)
+            log_gpu_memory_usage('@ActorRolloutRefWorker.generate_sequences() After entering rollout sharding manager', logger=logger)
 
             prompts = self.rollout_sharding_manager.preprocess_data(prompts)
             output = self.rollout.generate_sequences(prompts=prompts)
 
-            log_gpu_memory_usage('After rollout generation', logger=logger)
+            log_gpu_memory_usage('@ActorRolloutRefWorker.generate_sequences() After rollout generation', logger=logger)
 
             output = self.rollout_sharding_manager.postprocess_data(output)
 
@@ -441,13 +467,15 @@ class ActorRolloutRefWorker(Worker):
             # NOTE(sgm): the grad is already in CPU, only offload param here
             offload_fsdp_param_and_grad(module=self.actor_module_fsdp, offload_grad=self._is_offload_grad)
         # clear kv cache
-        torch.cuda.empty_cache()
-        log_gpu_memory_usage('After recompute log prob', logger=logger)
+        ## 尝试的更改，只在 ActorRolloutRefWorker.update_actor() 中添加empty_cache
+        # torch.cuda.empty_cache()
+        log_gpu_memory_usage('@ActorRolloutRefWorker.generate_sequences() After recompute log prob', logger=logger)
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def compute_ref_log_prob(self, data: DataProto):
         assert self._is_ref
+        log_gpu_memory_usage('@ActorRolloutRefWorker.compute_ref_log_prob() beginning', logger=logger)
 
         data = data.to('cuda')
 
@@ -471,12 +499,14 @@ class ActorRolloutRefWorker(Worker):
 
         if self._is_offload_param:
             offload_fsdp_param_and_grad(module=self.ref_module_fsdp, offload_grad=self._is_offload_grad)
-        torch.cuda.empty_cache()
+        ## 尝试的更改，只在 ActorRolloutRefWorker.update_actor() 中添加empty_cache
+        # torch.cuda.empty_cache()
         return output
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def save_checkpoint(self, local_path, hdfs_path=None):
         assert self._is_actor
+        log_gpu_memory_usage('@ActorRolloutRefWorker.save_checkpoint() beginning', logger=logger)
         import torch
         if self._is_offload_param:
             load_fsdp_param_and_grad(module=self.actor_module_fsdp,
@@ -617,7 +647,7 @@ class CriticWorker(Worker):
 
         auto_wrap_policy = get_fsdp_wrap_policy(module=critic_module, config=self.config.model.fsdp_config.wrap_policy)
 
-        log_gpu_memory_usage('Before critic FSDP', logger=None)
+        log_gpu_memory_usage('@ActorRolloutRefWorker._build_critic_model_optimizer() Before critic FSDP', logger=None)
 
         critic_module = FSDP(critic_module,
                              param_init_fn=init_fn,
@@ -629,7 +659,7 @@ class CriticWorker(Worker):
                              sync_module_states=True,
                              forward_prefetch=False)
 
-        log_gpu_memory_usage('After critic FSDP', logger=None)
+        log_gpu_memory_usage('@ActorRolloutRefWorker._build_critic_model_optimizer() After critic FSDP', logger=None)
 
         critic_optimizer = optim.AdamW(critic_module.parameters(),
                                        lr=config.optim.lr,
@@ -668,7 +698,8 @@ class CriticWorker(Worker):
 
         self.flops_counter = FlopsCounter(self.critic_model_config)
 
-        torch.cuda.empty_cache()
+        ## 尝试的更改，只在 ActorRolloutRefWorker.update_actor() 中添加empty_cache
+        # torch.cuda.empty_cache()
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def compute_values(self, data: DataProto):
@@ -692,11 +723,16 @@ class CriticWorker(Worker):
         output = output.to('cpu')
         if self._is_offload_param:
             offload_fsdp_param_and_grad(module=self.critic_module, offload_grad=self._is_offload_grad)
-        torch.cuda.empty_cache()
+        ## 尝试的更改，只在 ActorRolloutRefWorker.update_actor() 中添加empty_cache
+        # torch.cuda.empty_cache()
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
     def update_critic(self, data: DataProto):
+        log_gpu_memory_usage('@CriticWorker.update_critic() beginning', logger=logger)
+        ## 尝试的更改，只在 ActorRolloutRefWorker.update_actor() 中添加empty_cache
+        torch.cuda.empty_cache()
+        log_gpu_memory_usage('@CriticWorker.update_critic() after empty_cache', logger=logger)
         data = data.to('cuda')
         if self._is_offload_param:
             load_fsdp_param_and_grad(module=self.critic_module,
@@ -734,6 +770,7 @@ class CriticWorker(Worker):
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def save_checkpoint(self, local_path, hdfs_path=None):
+        log_gpu_memory_usage('@CriticWorker.save_checkpoint() beginning', logger=logger)
         import torch
         if self._is_offload_param:
             load_fsdp_param_and_grad(module=self.critic_module,

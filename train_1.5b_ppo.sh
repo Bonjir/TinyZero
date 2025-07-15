@@ -1,15 +1,16 @@
-#!/bin/bash
-# alias python='/home/weiji/anaconda3/envs/zero/bin/python'
-# alias python3='/home/weiji/anaconda3/envs/zero/bin/python3'
-# alias pip='/home/weiji/anaconda3/envs/zero/bin/pip'
+# This one works for 1.5B PPO on 4A20 GPUs
 
-export N_GPUS=2
-export CUDA_VISIBLE_DEVICES=2,3
+export N_GPUS=4
+export CUDA_VISIBLE_DEVICES=0,1,5,6
 ray stop --force && ray start --head --include-dashboard=True
-export BASE_MODEL="model/Qwen2.5-1.5B"
-export DATA_DIR="data/countdown"
-export ROLLOUT_TP_SIZE=2
-export EXPERIMENT_NAME=countdown-qwen2.5-1.5b
+export BASE_MODEL="/NAS/chenfeng/models/Qwen/Qwen2.5-1.5B/Qwen/Qwen2.5-1.5B"
+export DATA_DIR="/NAS/chenfeng/dataset/countdown"
+export ROLLOUT_TP_SIZE=4
+export EXPERIMENT_NAME=countdown-qwen2.5-1.5b-ppo
 export VLLM_ATTENTION_BACKEND=XFORMERS
 
-bash ./scripts/train_tiny_zero_a100_ppo.sh
+export SWANLAB_API_KEY=YOUR_API_KEY
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# bash ./scripts/train_tiny_zero_a100_ppo.sh
+nohup bash ./scripts/train_tiny_zero_4a20_1.5b_ppo.sh.sh &>"./outputs/ppo_$(date +'%y%m%d-%H%M%S').nohupoutput"

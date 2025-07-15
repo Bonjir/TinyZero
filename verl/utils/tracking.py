@@ -24,7 +24,13 @@ from typing import List, Union, Dict, Any
 class Tracking(object):
     supported_backend = ['wandb', 'mlflow', 'console', 'swanlab']
 
-    def __init__(self, project_name, experiment_name, default_backend: Union[str, List[str]] = 'console', config=None):
+    def __init__(self, 
+                project_name, 
+                experiment_name, 
+                default_backend: Union[str, List[str]] = 'console', 
+                resume: bool = False,
+                resume_id: Union[str, None] = None,
+                config=None):
         if isinstance(default_backend, str):
             default_backend = [default_backend]
         for backend in default_backend:
@@ -51,7 +57,12 @@ class Tracking(object):
             SWANLAB_API_KEY = os.environ.get("SWANLAB_API_KEY", None)
             if SWANLAB_API_KEY:
                 swanlab.login(api_key=SWANLAB_API_KEY)
-            swanlab.init(project=project_name, name=experiment_name, config=config)
+            # 更改: 添加tracking resume
+            if resume and resume_id is not None:
+                swanlab.init(project=project_name, name=experiment_name, resume=True, id=resume_id, config=config)
+            else:
+                swanlab.init(project=project_name, name=experiment_name, config=config)
+                
             self.logger['wandb'] = swanlab
 
         if 'mlflow' in default_backend:

@@ -2,6 +2,11 @@ trainer:
   nnodes: 1
   n_gpus_per_node: 8
 
+  tracking:
+    resume: False
+    resume_id: null
+    start_step: 0  # start step for resuming training, default is 0
+
 data:
   path: ~/data/rlhf/math/test.parquet
   prompt_key: prompt

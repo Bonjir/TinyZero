@@ -45,7 +45,7 @@ class SFTDataset(Dataset):
                  response_dict_keys=None,
                  max_length=1024,
                  truncation='error'):
-        assert truncation in ['error', 'left', 'right']
+        assert truncation in ['error', 'left', 'right', 'pass']
         self.truncation = truncation
 
         if not isinstance(parquet_files, List):
@@ -84,6 +84,7 @@ class SFTDataset(Dataset):
             dataframe = pd.read_parquet(parquet_file)
             dataframes.append(dataframe)
         self.dataframe = pd.concat(dataframes)
+        print(f'cols: {self.dataframe.columns}')
         self.prompts = self.dataframe[self.prompt_key]
         for key in self.prompt_dict_keys:
             # type(x): pandas.core.series.Series
@@ -94,7 +95,7 @@ class SFTDataset(Dataset):
             except Exception:
                 print(f'self.prompts={self.prompts}')
                 raise
-        self.prompts = self.prompts.tolist()
+        self.prompts = list(self.prompts)
         self.responses = self.dataframe[self.response_key]
         for key in self.response_dict_keys:
             try:
@@ -102,13 +103,23 @@ class SFTDataset(Dataset):
             except Exception:
                 print(f'self.responses={self.responses}')
                 raise
-        self.responses = self.responses.tolist()
+        self.responses = list(self.responses)
+        
+        print(f'## loaded {len(self.prompts)} prompts and {len(self.responses)} responses from {self.parquet_files}')
 
     def __len__(self):
         return len(self.prompts)
 
     def __getitem__(self, item):
         tokenizer = self.tokenizer
+
+        if item > len(self.prompts) - 1:
+            if self.truncation == 'pass':
+                # this is a very dangerous way to handle the index, which may lead to infinite loop
+                print(f'Warning: item {item} is out of range, so we let it wrap around to {item % len(self.prompts)}')
+                item = item % len(self.prompts)
+            else:
+                raise IndexError(f'item {item} is out of range, dataset length is {len(self.prompts)}')
 
         prompt = self.prompts[item]
         response = self.responses[item]
@@ -152,6 +163,8 @@ class SFTDataset(Dataset):
             elif self.truncation == 'right':
                 input_ids = input_ids[:self.max_length]
                 attention_mask = attention_mask[:self.max_length]
+            elif self.truncation == 'pass':
+                return self.__getitem__(item + 1)  # skip this item
             elif self.truncation == 'error':
                 raise NotImplementedError(f'{sequence_length=} is larger than {self.max_length=}')
             else:

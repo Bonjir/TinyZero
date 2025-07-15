@@ -16,7 +16,7 @@ def extract_solution(solution_str):
     solution_str = solution_str.split('\n')[-1]
 
     answer_pattern = r'<answer>(.*?)</answer>'
-    match = re.finditer(answer_pattern, solution_str)
+    match = re.finditer(answer_pattern, solution_str, re.S)
     matches = list(match)
     if matches:
         final_answer = matches[-1].group(1).strip()
@@ -28,6 +28,10 @@ def extract_solution(solution_str):
 def validate_equation(equation_str, available_numbers):
     """Validate that equation only uses available numbers and each number once."""
     try:
+        ## if the equation_str is an equation, then split it and only return the left part
+        if '=' in equation_str:
+            equation_str = equation_str.split('=')[0].strip()
+        
         # Extract all numbers from the equation
         numbers_in_eq = [int(n) for n in re.findall(r'\d+', equation_str)]
         
@@ -44,6 +48,10 @@ def validate_equation(equation_str, available_numbers):
 def evaluate_equation(equation_str):
     """Safely evaluate the arithmetic equation using eval() with precautions."""
     try:
+        ## if the equation_str is an equation, then split it and only return the left part
+        if '=' in equation_str:
+            equation_str = equation_str.split('=')[0].strip()
+        
         # Define a regex pattern that only allows numbers, operators, parentheses, and whitespace
         allowed_pattern = r'^[\d+\-*/().\s]+$'
         if not re.match(allowed_pattern, equation_str):
@@ -146,3 +154,4 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0.1,
         if do_print:
             print(f"Error evaluating equation")
         return final_format_score 
+    

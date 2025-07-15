@@ -241,6 +241,12 @@ class DataParallelPPOActor(BasePPOActor):
                 advantages = data['advantages']
 
                 clip_ratio = self.config.clip_ratio
+                clip_ratio_low = (
+                    self.config.clip_ratio_low if self.config.clip_ratio_low is not None else clip_ratio
+                )
+                clip_ratio_high = (
+                    self.config.clip_ratio_high if self.config.clip_ratio_high is not None else clip_ratio
+                )
                 entropy_coeff = self.config.entropy_coeff
                 loss_agg_mode = self.config.loss_agg_mode
                 
@@ -256,6 +262,8 @@ class DataParallelPPOActor(BasePPOActor):
                             # eos_mask=response_mask,
                             response_mask=response_mask,
                             cliprange=clip_ratio,
+                            cliprange_low=clip_ratio_low,
+                            cliprange_high=clip_ratio_high,
                             loss_agg_mode=loss_agg_mode,
                         )
                 # compute entropy loss from entropy

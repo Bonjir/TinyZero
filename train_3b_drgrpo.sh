@@ -1,3 +1,4 @@
+# This one works for 3B DR-GRPO on 2A20 GPUs
 
 export N_GPUS=2
 export CUDA_VISIBLE_DEVICES=0,1
@@ -11,4 +12,4 @@ export VLLM_ATTENTION_BACKEND=XFORMERS
 export SWANLAB_API_KEY=YOUR_API_KEY_HERE
 
 # bash ./scripts/train_tiny_zero_a100_drgrpo.sh
-nohup bash ./scripts/train_tiny_zero_a100_drgrpo.sh &>./nohupoutput
+nohup bash ./scripts/train_tiny_zero_a100_drgrpo.sh &>./nohupoutput_drgrpo

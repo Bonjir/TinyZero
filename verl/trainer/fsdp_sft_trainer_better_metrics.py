@@ -223,13 +223,16 @@ class FSDPSFTTrainer(object):
         labels = batch['input_ids'][:, 1:].cuda()
 
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-            output = self.fsdp_model(input_ids=batch['input_ids'],
-                                     attention_mask=batch['attention_mask'],
-                                     position_ids=batch['position_ids'],
-                                     use_cache=False)  # prevent model thinks it it generating
+            output = self.fsdp_model(
+                input_ids=batch['input_ids'],
+                attention_mask=batch['attention_mask'],
+                position_ids=batch['position_ids'],
+                use_cache=False
+            )  # prevent model thinks it it generating
 
         logits = output.logits
 
+        # 计算交叉熵损失
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels.contiguous()
         # Flatten the tokens
@@ -242,7 +245,7 @@ class FSDPSFTTrainer(object):
         loss = loss * loss_mask
 
         valid_token_this_rank = torch.sum(loss_mask)
-
+        
         if self.config.data.balance_dp_token:
             torch.distributed.all_reduce(valid_token_this_rank)  # becomes total valid tokens in all ranks
             dp_size = torch.distributed.get_world_size()
@@ -252,6 +255,41 @@ class FSDPSFTTrainer(object):
         loss = torch.sum(loss) / valid_token_this_rank * dp_size  # possible bugs here for dp
         return loss
 
+    # 新增：计算评分指标
+    def _compute_metrics(self, batch):
+        with torch.no_grad():
+            # 获取模型生成的响应（使用贪婪解码）
+            generated_ids = torch.argmax(logits, dim=-1)
+            
+            # 只取响应部分（假设prompt长度已知）
+            # 这里需要根据你的数据结构调整如何分离prompt和response
+            prompt_lengths = batch.get('prompt_lengths', [input_ids_full.shape[1] // 2])  # 示例：假设prompt占一半
+            
+            scores = []
+            for i in range(input_ids_full.shape[0]):
+                # 解码生成的响应
+                response_tokens = generated_ids[i, prompt_lengths[i]:]
+                response_str = self.tokenizer.decode(
+                    response_tokens, 
+                    skip_special_tokens=True
+                )
+                
+                # 解码真实响应（用于参考）
+                true_response_tokens = input_ids_full[i, prompt_lengths[i]:]
+                true_response_str = self.tokenizer.decode(
+                    true_response_tokens,
+                    skip_special_tokens=True
+                )
+                
+                # 计算评分
+                score = self.compute_score(response_str, true_response_str)  # 修改compute_score以接受参考响应
+                scores.append(score)
+            
+            avg_score = torch.tensor(sum(scores) / len(scores), device=loss.device)
+        return {
+            "score": avg_score
+        }
+        
     def training_step(self, batch: TensorDict):
         self.fsdp_model.train()
 
@@ -286,14 +324,31 @@ class FSDPSFTTrainer(object):
 
         step_loss = torch.tensor(step_loss).cuda()
         torch.distributed.all_reduce(step_loss, op=torch.distributed.ReduceOp.AVG)
-        return {'train/loss': step_loss.detach().item(), 'train/lr': lr}
+        
+        # compute metrics
+        metrics = self._compute_metrics(batch)
+        score = metrics.get('score', torch.tensor(0.0, device=batch['input_ids'].device))
+        torch.distributed.all_reduce(score, op=torch.distributed.ReduceOp.AVG)
+        return {
+            'train/loss': step_loss.detach().item(), 
+            'train/score': score.detach().item(),
+            'train/lr': lr
+        }
 
     def validation_step(self, batch: TensorDict):
         self.fsdp_model.eval()
         with torch.no_grad():
             loss = self._compute_loss(batch)
             torch.distributed.all_reduce(loss, op=torch.distributed.ReduceOp.AVG)
-        return loss
+            
+            # compute metrics
+            metrics = self._compute_metrics(batch)
+            score = metrics.get('score', torch.tensor(0.0, device=batch['input_ids'].device))
+            torch.distributed.all_reduce(score, op=torch.distributed.ReduceOp.AVG)
+        return {
+            "loss": loss,
+            "score": score.detach().item()
+        }
 
     def save_checkpoint(self, step):
         # save checkpoint
@@ -358,17 +413,26 @@ class FSDPSFTTrainer(object):
                     print(f'## valid & save checkpoint at global step {global_step}')
                     # validation
                     val_losses = []
-                    for data in self.val_dataloader:
-                        data = TensorDict(data, batch_size=self.config.data.micro_batch_size).cuda()
-                        val_loss = self.validation_step(data)
+                    val_scores = []
+                    for val_data in self.val_dataloader:
+                        val_data = TensorDict(val_data, batch_size=self.config.val_data.micro_batch_size).cuda()
+                        metrics = self.validation_step(val_data)
+                        val_loss = metrics['loss']
+                        val_score = metrics['score']
                         val_losses.append(val_loss)
-                        print(f'## data: {data["input_ids"].shape}')
-                        print(f'## val loss: {val_loss.item()}')
-                    print(f'## val losses: {val_losses}')
+                        val_scores.append(val_score)
+                    #     print(f'## val_data: {val_data["input_ids"].shape}')
+                    #     print(f'## val loss: {val_loss.item()}')
+                    # print(f'## val losses: {val_losses}')
                     if rank == 0:
                         val_loss = torch.mean(torch.stack(val_losses))
-                        metric = {'val/loss': val_loss.detach().item()}
+                        val_score = torch.mean(torch.tensor(val_scores, device=val_loss.device))
+                        print(f'## val loss: {val_loss.item()}, val score: {val_score.item()}')
+                        metric = {'val/loss': val_loss.detach().item(), 'val/score': val_score.detach().item()}
                         tracking.log(data=metric, step=global_step)
+                        # print(f'## logged validation metrics: {metric}')
+                        # metric = {'val/loss': val_loss.detach().item()}
+                        # tracking.log(data=metric, step=global_step)
                     torch.distributed.barrier()
 
                     # save checkpoint

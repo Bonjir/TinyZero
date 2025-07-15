@@ -569,9 +569,11 @@ class RayPPOTrainer(object):
         logger = Tracking(project_name=self.config.trainer.project_name,
                           experiment_name=self.config.trainer.experiment_name,
                           default_backend=self.config.trainer.logger,
+                          resume=self.config.trainer.tracking.get('resume', False),
+                          resume_id=self.config.trainer.tracking.get('resume_id', None),
                           config=OmegaConf.to_container(self.config, resolve=True))
 
-        self.global_steps = 0
+        self.global_steps = self.config.trainer.tracking.get('start_step', 0)
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
@@ -640,11 +642,17 @@ class RayPPOTrainer(object):
                         reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
 
+
+                        if (self.config.algorithm.use_kl_in_reward and self.config.actor_rollout_ref.actor.use_kl_loss):
+                            print(f"NOTICE: You have both enabled in-reward kl and kl loss, default to ban in-reward kl")
+
                         # compute rewards. apply_kl_penalty if available
-                        if not self.config.actor_rollout_ref.actor.use_kl_loss:
-                            batch, kl_metrics = apply_kl_penalty(batch,
-                                                                 kl_ctrl=self.kl_ctrl,
-                                                                 kl_penalty=self.config.algorithm.kl_penalty)
+                        if self.config.algorithm.use_kl_in_reward and not self.config.actor_rollout_ref.actor.use_kl_loss:
+                            batch, kl_metrics = apply_kl_penalty(
+                                batch,
+                                kl_ctrl=self.kl_ctrl,
+                                kl_penalty=self.config.algorithm.kl_penalty
+                            )
                             metrics.update(kl_metrics)
                         else:
                             batch.batch['token_level_rewards'] = batch.batch['token_level_scores']

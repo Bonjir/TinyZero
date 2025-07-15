@@ -5,8 +5,10 @@ data:
   val_files: ~/data/gsm8k/test.parquet
   prompt_key: question
   response_key: answer
-  max_length: 1024
-  truncation: error
+  prompt_dict_keys: null
+  response_dict_keys: null
+  max_length: 2048
+  truncation: pass
   balance_dp_token: False
   chat_template: null
 model:
@@ -35,4 +37,6 @@ trainer:
   total_epochs: 4
   logger: ['console']
   seed: 1
-
+  validate_every_n_steps: 10
+  val_before_training: True
+  total_training_steps: null
